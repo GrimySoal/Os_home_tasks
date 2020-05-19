@@ -4,7 +4,6 @@
 #include <utility>
 #include <mutex>
 #include <stdexcept>
-#include <thread>
 
 template<class T>
 class BufferedChannel {
@@ -17,41 +16,41 @@ class BufferedChannel {
 
   void send(const T value) {
     if (is_closed) throw std::runtime_error("channel is closed");
-    send_locker.lock();
     locker.lock();
+    send_locker.lock();
+    if (is_closed) {
+      locker.unlock();
+      send_locker.unlock();
+      throw std::runtime_error("channel is closed");
+    }
     buffer[real_amount] = value;
-    ++real_amount;
-    locker.unlock();
-    if(real_amount < size) send_locker.unlock();
+    if(++real_amount < size) send_locker.unlock();
     recv_locker.unlock();
+    locker.unlock();
   }
 
   std::pair<T, bool> recv() {
     if (is_closed && real_amount == 0) {
       return {T(), false};
     }
-    recv_locker.lock();
     locker.lock();
+    recv_locker.lock();
     if(real_amount == 0){
       locker.unlock();
+      recv_locker.unlock();
       return {T(), false};
     }
     T temp = std::move(buffer[real_amount - 1]);
-    --real_amount;
-    locker.unlock();
+    if(--real_amount > 0 || is_closed) recv_locker.unlock();
     send_locker.unlock();
-    if(real_amount > 0) recv_locker.unlock();
+    locker.unlock();
     return {temp, true};
   }
 
   void close() {
     is_closed = true;
-    unsigned int threads_amount = std::thread::hardware_concurrency();
-    threads_amount = threads_amount == 0 ? 50 : threads_amount;
-    //I know it is really workaround but I was interested in doing this without conditional variables
-    for(int i = 0; i < threads_amount; ++i){
-      recv_locker.unlock();
-    }
+    recv_locker.unlock();
+    send_locker.unlock();
   }
 
  private:
